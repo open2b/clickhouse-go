@@ -1,4 +1,4 @@
-module github.com/open2b/clickhouse-go
+module github.com/open2b/clickhouse-go/v2
 
 go 1.18
 
