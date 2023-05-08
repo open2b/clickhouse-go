@@ -18,6 +18,7 @@
 package column
 
 import (
+	"database/sql"
 	"encoding/binary"
 	"fmt"
 	"github.com/ClickHouse/ch-go/proto"
@@ -93,6 +94,9 @@ func (col *IPv4) ScanRow(dest any, row int) error {
 		*d = new(uint32)
 		**d = binary.BigEndian.Uint32(ipV4[:])
 	default:
+		if scan, ok := dest.(sql.Scanner); ok {
+			return scan.Scan(col.row(row))
+		}
 		return &ColumnConverterError{
 			Op:   "ScanRow",
 			To:   fmt.Sprintf("%T", dest),
