@@ -18,6 +18,7 @@
 package column
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
@@ -88,7 +89,7 @@ func (col *Map) Row(i int, ptr bool) any {
 }
 
 func (col *Map) ScanRow(dest any, i int) error {
-	if scanner, ok := dest.(interface{ Scan(any) error }); ok {
+	if scanner, ok := dest.(sql.Scanner); ok {
 		return scanner.Scan(col.row(i).Interface())
 	}
 	value := reflect.Indirect(reflect.ValueOf(dest))
