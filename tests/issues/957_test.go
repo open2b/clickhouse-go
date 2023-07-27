@@ -21,42 +21,32 @@ import (
 	"context"
 	"github.com/ClickHouse/clickhouse-go/v2"
 	clickhouse_tests "github.com/ClickHouse/clickhouse-go/v2/tests"
-	clickhouse_std_tests "github.com/ClickHouse/clickhouse-go/v2/tests/std"
 	"github.com/stretchr/testify/require"
-	"strconv"
 	"testing"
+	"time"
 )
 
-func Test762(t *testing.T) {
-	var (
-		conn, err = clickhouse_tests.GetConnection("issues", nil, nil, &clickhouse.Compression{
-			Method: clickhouse.CompressionLZ4,
-		})
-	)
-	rows, err := conn.Query(context.Background(), "SELECT (NULL, NULL)")
+func Test957(t *testing.T) {
+	// given
+	ctx := context.Background()
+	testEnv, err := clickhouse_tests.GetTestEnvironment(testSet)
 	require.NoError(t, err)
-	for rows.Next() {
-		var (
-			n []any
-		)
-		require.NoError(t, rows.Scan(&n))
-		require.Equal(t, []any{(*any)(nil), (*any)(nil)}, n)
-	}
 
-}
+	// when the client is configured to use the test environment
+	opts := clickhouse_tests.ClientOptionsFromEnv(testEnv, clickhouse.Settings{})
+	// and the client is configured to have only 1 connection
+	opts.MaxIdleConns = 2
+	opts.MaxOpenConns = 1
+	// and the client is configured to have a connection lifetime of 1/10 of a second
+	opts.ConnMaxLifetime = time.Second / 10
+	conn, err := clickhouse.Open(&opts)
+	require.NoError(t, err)
 
-func Test762Std(t *testing.T) {
-	useSSL, err := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_SSL", "false"))
-	require.NoError(t, err)
-	conn, err := clickhouse_std_tests.GetDSNConnection("issues", clickhouse.Native, useSSL, nil)
-	rows, err := conn.Query("SELECT tuple(NULL)")
-	require.NoError(t, err)
-	for rows.Next() {
-		var (
-			n any
-		)
-		require.NoError(t, rows.Scan(&n))
-		expected := []any{(*any)(nil)}
-		require.Equal(t, expected, n)
+	// then the client should be able to execute queries for 1 second
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rows, err := conn.Query(ctx, "SELECT 1")
+		require.NoError(t, err)
+		rows.Close()
 	}
 }
