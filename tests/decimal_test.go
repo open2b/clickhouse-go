@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"testing"
 
@@ -62,6 +63,7 @@ func TestDecimal(t *testing.T) {
 		decimal.New(135, 7),
 		decimal.New(256, 8),
 	))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 decimal.Decimal
@@ -109,6 +111,7 @@ func TestNegativeDecimal(t *testing.T) {
 		decimal.RequireFromString("-0.01171"),
 		decimal.RequireFromString("-3.0111"),
 		decimal.RequireFromString("-21111122.0111111111111111111171")))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 decimal.Decimal
@@ -149,6 +152,7 @@ func TestNullableDecimal(t *testing.T) {
 	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_decimal")
 	require.NoError(t, err)
 	require.NoError(t, batch.Append(decimal.New(25, 0), decimal.New(30, 0), decimal.New(35, 0)))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 *decimal.Decimal
@@ -163,6 +167,7 @@ func TestNullableDecimal(t *testing.T) {
 	batch, err = conn.PrepareBatch(ctx, "INSERT INTO test_decimal")
 	require.NoError(t, err)
 	require.NoError(t, batch.Append(decimal.New(25, 0), nil, decimal.New(35, 0)))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	{
 		var (
@@ -198,8 +203,10 @@ func TestDecimalFlush(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		vals[i] = decimal.RequireFromString(fmt.Sprintf("1.%s", RandIntString(5)))
 		batch.Append(vals[i])
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
 	batch.Send()
 	rows, err := conn.Query(ctx, "SELECT * FROM decimal_flush")
 	require.NoError(t, err)
@@ -253,9 +260,11 @@ func TestRoundDecimals(t *testing.T) {
 			decimal.NewFromFloat(601),    // this will make decimal 601*e^0
 			decimal.NewFromFloat(601.21), // check that normal case is working
 		}
-		for _, c := range checks {
+		for i, c := range checks {
 			batch.Append(c)
+			require.Equal(t, i+1, batch.Rows())
 		}
+		require.Equal(t, 3, batch.Rows())
 		batch.Send()
 		rows, err := conn.Query(ctx, "SELECT * FROM decimal_flush ORDER BY Col1 asc")
 		require.NoError(tt, err)
@@ -275,4 +284,71 @@ func TestRoundDecimals(t *testing.T) {
 		})
 	}
 
+}
+
+type testDecimalSerializer struct {
+	val decimal.Decimal
+}
+
+func (c testDecimalSerializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testDecimalSerializer) Scan(src any) error {
+	if t, ok := src.(decimal.Decimal); ok {
+		*c = testDecimalSerializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testDecimalSerializer", src)
+}
+
+func TestDecimalValuer(t *testing.T) {
+	conn, err := GetNativeConnection(clickhouse.Settings{
+		"allow_experimental_bigint_types": 1,
+	}, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	require.NoError(t, err)
+	if !CheckMinServerServerVersion(conn, 21, 1, 0) {
+		t.Skip(fmt.Errorf("unsupported clickhouse version"))
+		return
+	}
+	const ddl = `
+			CREATE TABLE test_decimal (
+				  Col1 Decimal32(3)
+				, Col2 Decimal(18,6)
+				, Col3 Decimal(15,7)
+				, Col4 Decimal128(8)
+				, Col5 Decimal256(9)
+			) Engine MergeTree() ORDER BY tuple()
+		`
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS test_decimal")
+	}()
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_decimal")
+	require.NoError(t, err)
+	require.NoError(t, batch.Append(
+		testDecimalSerializer{val: decimal.New(25, 4)},
+		testDecimalSerializer{val: decimal.New(30, 5)},
+		testDecimalSerializer{val: decimal.New(35, 6)},
+		testDecimalSerializer{val: decimal.New(135, 7)},
+		testDecimalSerializer{val: decimal.New(256, 8)},
+	))
+	require.Equal(t, 1, batch.Rows())
+	require.NoError(t, batch.Send())
+	var (
+		col1 decimal.Decimal
+		col2 decimal.Decimal
+		col3 decimal.Decimal
+		col4 decimal.Decimal
+		col5 decimal.Decimal
+	)
+	require.NoError(t, conn.QueryRow(ctx, "SELECT * FROM test_decimal").Scan(&col1, &col2, &col3, &col4, &col5))
+	assert.True(t, decimal.New(25, 4).Equal(col1))
+	assert.True(t, decimal.New(30, 5).Equal(col2))
+	assert.True(t, decimal.New(35, 6).Equal(col3))
+	assert.True(t, decimal.New(135, 7).Equal(col4))
+	assert.True(t, decimal.New(256, 8).Equal(col5))
 }

@@ -268,6 +268,8 @@ func TestFormatScaledTime(t *testing.T) {
 	require.Equal(t, "toDateTime('2022-01-12 15:00:00')", val)
 	val, _ = format(t1.Location(), Seconds, t1.In(time.Now().Location()))
 	require.Equal(t, "toDateTime('1641999600')", val)
+	val, _ = format(t1.Location(), Seconds, time.Unix(0, 0))
+	require.Equal(t, "toDateTime(0)", val)
 	val, _ = format(tz, Seconds, t1)
 	require.Equal(t, "toDateTime('2022-01-12 15:00:00', 'UTC')", val)
 	// milliseconds
@@ -275,6 +277,8 @@ func TestFormatScaledTime(t *testing.T) {
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123', 3)", val)
 	val, _ = format(t1.Location(), MilliSeconds, t1.In(time.Now().Location()))
 	require.Equal(t, "toDateTime64('1641999600123', 3)", val)
+	val, _ = format(t1.Location(), MilliSeconds, time.Unix(0, 0))
+	require.Equal(t, "toDateTime(0)", val)
 	val, _ = format(tz, MilliSeconds, t1)
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123', 3, 'UTC')", val)
 	// microseconds
@@ -282,6 +286,8 @@ func TestFormatScaledTime(t *testing.T) {
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123456', 6)", val)
 	val, _ = format(t1.Location(), MicroSeconds, t1.In(time.Now().Location()))
 	require.Equal(t, "toDateTime64('1641999600123456', 6)", val)
+	val, _ = format(t1.Location(), MicroSeconds, time.Unix(0, 0))
+	require.Equal(t, "toDateTime(0)", val)
 	val, _ = format(tz, MicroSeconds, t1)
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123456', 6, 'UTC')", val)
 	// nanoseconds
@@ -289,6 +295,8 @@ func TestFormatScaledTime(t *testing.T) {
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123456789', 9)", val)
 	val, _ = format(t1.Location(), NanoSeconds, t1.In(time.Now().Location()))
 	require.Equal(t, "toDateTime64('1641999600123456789', 9)", val)
+	val, _ = format(t1.Location(), NanoSeconds, time.Unix(0, 0))
+	require.Equal(t, "toDateTime(0)", val)
 	val, _ = format(tz, NanoSeconds, t1)
 	require.Equal(t, "toDateTime64('2022-01-12 15:00:00.123456789', 9, 'UTC')", val)
 }
@@ -329,6 +337,55 @@ func TestFormatArray(t *testing.T) {
 func TestFormatMap(t *testing.T) {
 	val, _ := format(time.UTC, Seconds, map[string]uint8{"a": 1})
 	assert.Equal(t, "map('a', 1)", val)
+}
+
+// a simple (non thread safe) ordered map, implementing the column.OrderedMap interface
+type OrderedMap struct {
+	keys   []any
+	values map[any]any
+}
+
+func NewOrderedMap() *OrderedMap {
+	om := OrderedMap{}
+	om.keys = []any{}
+	om.values = map[any]any{}
+	return &om
+}
+
+func (om *OrderedMap) Get(key any) (any, bool) {
+	if value, present := om.values[key]; present {
+		return value, present
+	}
+	return nil, false
+}
+
+func (om *OrderedMap) Put(key any, value any) {
+	if _, present := om.values[key]; present {
+		om.values[key] = value
+		return
+	}
+	om.keys = append(om.keys, key)
+	om.values[key] = value
+}
+
+func (om *OrderedMap) Keys() <-chan any {
+	ch := make(chan any)
+	go func() {
+		defer close(ch)
+		for _, key := range om.keys {
+			ch <- key
+		}
+	}()
+	return ch
+}
+
+func TestFormatMapOrdered(t *testing.T) {
+	om := NewOrderedMap()
+	om.Put("b", 2)
+	om.Put("a", 1)
+
+	val, _ := format(time.UTC, Seconds, om)
+	assert.Equal(t, "map('b', 2, 'a', 1)", val)
 }
 
 func TestBindNamedWithTernaryOperator(t *testing.T) {

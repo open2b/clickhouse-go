@@ -20,14 +20,14 @@ package std
 import (
 	"database/sql"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2"
-	clickhouse_tests "github.com/ClickHouse/clickhouse-go/v2/tests"
-	"github.com/stretchr/testify/require"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+	clickhouse_tests "github.com/ClickHouse/clickhouse-go/v2/tests"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStdDateTime64(t *testing.T) {
@@ -52,6 +52,8 @@ func TestStdDateTime64(t *testing.T) {
 				, Col6 Array(Nullable(DateTime64(3, 'Europe/Moscow')))
 				, Col7 DateTime64(0, 'Europe/London')
 				, Col8 Nullable(DateTime64(3, 'Europe/Moscow'))
+				, Col9 DateTime64(9)
+				, Col10 DateTime64(9)
 			) Engine MergeTree() ORDER BY tuple()
 		`
 			defer func() {
@@ -68,6 +70,8 @@ func TestStdDateTime64(t *testing.T) {
 				datetime2 = time.Now().Truncate(time.Nanosecond)
 				datetime3 = time.Now().Truncate(time.Second)
 			)
+			expectedMinDateTime, err := time.Parse("2006-01-02 15:04:05", "1900-01-01 00:00:00")
+			require.NoError(t, err)
 			_, err = batch.Exec(
 				datetime1,
 				datetime2,
@@ -77,20 +81,24 @@ func TestStdDateTime64(t *testing.T) {
 				[]*time.Time{&datetime3, nil, &datetime3},
 				sql.NullTime{Time: datetime3, Valid: true},
 				sql.NullTime{Time: time.Time{}, Valid: false},
+				expectedMinDateTime,
+				time.Time{},
 			)
 			require.NoError(t, err)
 			require.NoError(t, scope.Commit())
 			var (
-				col1 time.Time
-				col2 time.Time
-				col3 time.Time
-				col4 *time.Time
-				col5 []time.Time
-				col6 []*time.Time
-				col7 sql.NullTime
-				col8 sql.NullTime
+				col1  time.Time
+				col2  time.Time
+				col3  time.Time
+				col4  *time.Time
+				col5  []time.Time
+				col6  []*time.Time
+				col7  sql.NullTime
+				col8  sql.NullTime
+				col9  time.Time
+				col10 time.Time
 			)
-			require.NoError(t, conn.QueryRow("SELECT * FROM test_datetime64").Scan(&col1, &col2, &col3, &col4, &col5, &col6, &col7, &col8))
+			require.NoError(t, conn.QueryRow("SELECT * FROM test_datetime64").Scan(&col1, &col2, &col3, &col4, &col5, &col6, &col7, &col8, &col9, &col10))
 			assert.Equal(t, datetime1.In(time.UTC), col1)
 			assert.Equal(t, datetime2.UnixNano(), col2.UnixNano())
 			assert.Equal(t, datetime3.UnixNano(), col3.UnixNano())
@@ -107,6 +115,8 @@ func TestStdDateTime64(t *testing.T) {
 			assert.NotNil(t, col6[2])
 			require.Equal(t, sql.NullTime{Time: datetime3.In(col7.Time.Location()), Valid: true}, col7)
 			require.Equal(t, sql.NullTime{Time: time.Time{}, Valid: false}, col8)
+			require.Equal(t, time.Date(1900, 01, 01, 0, 0, 0, 0, time.UTC), col9)
+			require.Equal(t, time.Unix(0, 0).UTC(), col10)
 		})
 	}
 }

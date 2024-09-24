@@ -31,6 +31,7 @@ import (
 	"github.com/paulmach/orb"
 	"github.com/shopspring/decimal"
 	"database/sql"
+	"database/sql/driver"
 	"github.com/ClickHouse/ch-go/proto"
 )
 
@@ -230,7 +231,7 @@ func (col *{{ .ChType }}) ScanRow(dest any, row int) error {
 	case *sql.Null{{ .ChType }}:
 		return d.Scan(value)
 	{{- end }}
-    {{- if eq .ChType "Int8" }}
+    {{- if or (eq .ChType "Int8") (eq .ChType "UInt8")  }}
 	case *bool:
 		switch value {
 		case 0:
@@ -308,13 +309,29 @@ func (col *{{ .ChType }}) Append(v any) (nulls []uint8,err error) {
 		nulls = make([]uint8, len(v))
 		for i := range v {
 			val := int8(0)
-			if *v[i] {
+			if v[i] == nil {
+				nulls[i] = 1
+			} else if *v[i] {
 				val = 1
 			}
 			col.col.Append(val)
 		}
 	{{- end }}
 	default:
+
+	    if valuer, ok := v.(driver.Valuer); ok {
+            val, err := valuer.Value()
+            if err != nil {
+                return nil, &ColumnConverterError{
+                    Op:   "Append",
+                    To:   "{{ .ChType }}",
+                    From: fmt.Sprintf("%T", v),
+                    Hint: "could not get driver.Valuer value",
+                }
+            }
+            return col.Append(val)
+        }
+
 		return nil, &ColumnConverterError{
 			Op:   "Append",
 			To:   "{{ .ChType }}",
@@ -382,7 +399,21 @@ func (col *{{ .ChType }}) AppendRow(v any) error {
         col.col.Append(val)
 	{{- end }}
 	default:
-		if rv := reflect.ValueOf(v); rv.Kind() == col.ScanType().Kind() && rv.CanConvert(col.ScanType()) {
+
+	    if valuer, ok := v.(driver.Valuer); ok {
+            val, err := valuer.Value()
+            if err != nil {
+                return &ColumnConverterError{
+                    Op:   "AppendRow",
+                    To:   "{{ .ChType }}",
+                    From: fmt.Sprintf("%T", v),
+                    Hint: "could not get driver.Valuer value",
+                }
+            }
+            return col.AppendRow(val)
+        }
+
+		if rv := reflect.ValueOf(v); rv.Kind() == col.ScanType().Kind() || rv.CanConvert(col.ScanType()) {
 			col.col.Append(rv.Convert(col.ScanType()).Interface().({{ .GoType }}))
 		} else {
 			return &ColumnConverterError{

@@ -19,11 +19,13 @@ package std
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
+	"testing"
+
 	"github.com/ClickHouse/clickhouse-go/v2"
 	clickhouse_tests "github.com/ClickHouse/clickhouse-go/v2/tests"
 	"github.com/stretchr/testify/require"
-	"strconv"
-	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -34,7 +36,7 @@ func TestStdMap(t *testing.T) {
 	require.NoError(t, err)
 	for name, protocol := range dsns {
 		t.Run(fmt.Sprintf("%s Protocol", name), func(t *testing.T) {
-			conn, err := GetStdDSNConnection(protocol, useSSL, nil)
+			conn, err := GetStdDSNConnection(protocol, useSSL, url.Values{})
 			require.NoError(t, err)
 			if !CheckMinServerVersion(conn, 21, 9, 0) {
 				t.Skip(fmt.Errorf("unsupported clickhouse version"))
@@ -46,7 +48,7 @@ func TestStdMap(t *testing.T) {
 			, Col2 Map(String, UInt64)
 			, Col3 Map(String, UInt64)
 			, Col4 Array(Map(String, String))
-			, Col5 Map(LowCardinality(String), LowCardinality(UInt64))
+			, Col5 Map(LowCardinality(String), LowCardinality(String))
 		) Engine MergeTree() ORDER BY tuple()
 		`
 			defer func() {
@@ -72,9 +74,9 @@ func TestStdMap(t *testing.T) {
 					map[string]string{"A": "B"},
 					map[string]string{"C": "D"},
 				}
-				col5Data = map[string]uint64{
-					"key_col_5_1": 100,
-					"key_col_5_2": 200,
+				col5Data = map[string]string{
+					"key_col_5_1": "100",
+					"key_col_5_2": "200",
 				}
 			)
 			_, err = batch.Exec(col1Data, col2Data, col3Data, col4Data, col5Data)
@@ -85,7 +87,7 @@ func TestStdMap(t *testing.T) {
 				col2 map[string]uint64
 				col3 map[string]uint64
 				col4 []map[string]string
-				col5 map[string]uint64
+				col5 map[string]string
 			)
 			require.NoError(t, conn.QueryRow("SELECT * FROM test_map").Scan(&col1, &col2, &col3, &col4, &col5))
 			assert.Equal(t, col1Data, col1)
@@ -93,6 +95,38 @@ func TestStdMap(t *testing.T) {
 			assert.Equal(t, col3Data, col3)
 			assert.Equal(t, col4Data, col4)
 			assert.Equal(t, col5Data, col5)
+		})
+	}
+}
+
+func TestStdInsertNilMap(t *testing.T) {
+	dsns := map[string]clickhouse.Protocol{"Native": clickhouse.Native, "Http": clickhouse.HTTP}
+	useSSL, err := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_SSL", "false"))
+	require.NoError(t, err)
+	for name, protocol := range dsns {
+		t.Run(fmt.Sprintf("%s Protocol", name), func(t *testing.T) {
+			conn, err := GetStdDSNConnection(protocol, useSSL, url.Values{})
+			require.NoError(t, err)
+			if !CheckMinServerVersion(conn, 21, 9, 0) {
+				t.Skip(fmt.Errorf("unsupported clickhouse version"))
+				return
+			}
+			const ddl = `
+		CREATE TABLE test_map_nil (
+			  Col1 Map(String, UInt64)
+		) Engine MergeTree() ORDER BY tuple()
+		`
+			defer func() {
+				conn.Exec("DROP TABLE test_map_nil")
+			}()
+			_, err = conn.Exec(ddl)
+			require.NoError(t, err)
+			scope, err := conn.Begin()
+			require.NoError(t, err)
+			batch, err := scope.Prepare("INSERT INTO test_map_nil")
+			require.NoError(t, err)
+			_, err = batch.Exec(nil)
+			assert.ErrorContains(t, err, " converting <nil> to Map(String, UInt64) is unsupported")
 		})
 	}
 }

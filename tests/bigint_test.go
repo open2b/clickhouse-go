@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"github.com/stretchr/testify/require"
 	"math/big"
@@ -52,6 +53,7 @@ func TestSimpleBigInt(t *testing.T) {
 	col1Data, ok := new(big.Int).SetString("170141183460469231731687303715884105727", 10)
 	require.True(t, ok)
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 big.Int
@@ -111,6 +113,7 @@ func TestBigInt(t *testing.T) {
 		}
 	)
 	require.NoError(t, batch.Append(col1Data, col2Data, col3Data, col4Data, col5Data, col6Data, col7Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 big.Int
@@ -178,6 +181,7 @@ func TestNullableBigInt(t *testing.T) {
 		}
 	)
 	require.NoError(t, batch.Append(col1Data, col2Data, col3Data, col4Data, col5Data, col6Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 *big.Int
@@ -246,6 +250,7 @@ func TestBigIntUIntOverflow(t *testing.T) {
 		}
 	)
 	require.NoError(t, batch.Append(col1Data, col2Data, col3Data, col4Data, col5Data, col6Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 big.Int
@@ -287,8 +292,65 @@ func TestBigIntFlush(t *testing.T) {
 		bigUint128Val.SetString(RandIntString(20), 10)
 		vals[i] = bigUint128Val
 		batch.Append(vals[i])
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
+	batch.Send()
+	rows, err := conn.Query(ctx, "SELECT * FROM big_int_flush")
+	require.NoError(t, err)
+	i := 0
+	for rows.Next() {
+		var col1 big.Int
+		require.NoError(t, rows.Scan(&col1))
+		assert.Equal(t, *vals[i], col1)
+		i += 1
+	}
+}
+
+type testBigIntSerializer struct {
+	val *big.Int
+}
+
+func (c testBigIntSerializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testBigIntSerializer) Scan(src any) error {
+	if t, ok := src.(*big.Int); ok {
+		*c = testBigIntSerializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testBigIntSerializer", src)
+}
+
+func TestBigIntValuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	require.NoError(t, err)
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS big_int_flush")
+	}()
+	const ddl = `
+		CREATE TABLE big_int_flush (
+			  Col1 UInt128
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO big_int_flush")
+	require.NoError(t, err)
+	vals := [1000]*big.Int{}
+	for i := 0; i < 1000; i++ {
+		bigUint128Val := big.NewInt(0)
+		bigUint128Val.SetString(RandIntString(20), 10)
+		vals[i] = bigUint128Val
+		batch.Append(testBigIntSerializer{val: vals[i]})
+		require.Equal(t, 1, batch.Rows())
+		batch.Flush()
+	}
+	require.Equal(t, 0, batch.Rows())
 	batch.Send()
 	rows, err := conn.Query(ctx, "SELECT * FROM big_int_flush")
 	require.NoError(t, err)

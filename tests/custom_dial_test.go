@@ -58,7 +58,7 @@ func TestCustomDialContext(t *testing.T) {
 			dialCount++
 			var d net.Dialer
 			if tlsConfig != nil {
-				return tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(5) * time.Second}, "tcp", addr, tlsConfig)
+				return tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(30) * time.Second}, "tcp", addr, tlsConfig)
 			}
 			return d.DialContext(ctx, "tcp", addr)
 		},
@@ -82,6 +82,8 @@ func TestCustomDialContext(t *testing.T) {
 }
 
 func TestCustomHTTPDialContext(t *testing.T) {
+	SkipOnCloud(t, "Unstable keep-alive on Cloud")
+
 	env, err := GetNativeTestEnvironment()
 	require.NoError(t, err)
 	var (

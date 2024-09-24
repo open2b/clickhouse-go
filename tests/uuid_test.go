@@ -19,10 +19,12 @@ package tests
 
 import (
 	"context"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
-	suuid "github.com/satori/go.uuid"
-	"github.com/stretchr/testify/require"
+	"database/sql/driver"
+	"fmt"
 	"testing"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/google/uuid"
@@ -58,6 +60,7 @@ func TestUUID(t *testing.T) {
 	require.NoError(t, batch.Append(col1Data, col2Data, []uuid.UUID{col2Data, col1Data}, nil, []*uuid.UUID{
 		&col1Data, nil, &col2Data,
 	}))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 uuid.UUID
@@ -94,12 +97,13 @@ func TestStringerUUID(t *testing.T) {
 	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_uuid")
 	require.NoError(t, err)
 	var (
-		col1Data = suuid.NewV4()
+		col1Data = uuid.New()
 	)
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
-		col1 suuid.UUID
+		col1 uuid.UUID
 	)
 	require.NoError(t, conn.QueryRow(ctx, "SELECT * FROM test_uuid").Scan(&col1))
 	assert.Equal(t, col1Data.String(), col1.String())
@@ -128,6 +132,7 @@ func TestNullableUUID(t *testing.T) {
 		col2Data = uuid.New()
 	)
 	require.NoError(t, batch.Append(col1Data, col2Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 *uuid.UUID
@@ -142,6 +147,7 @@ func TestNullableUUID(t *testing.T) {
 	{
 		var col1Data = uuid.New()
 		require.NoError(t, batch.Append(col1Data, nil))
+		require.Equal(t, 1, batch.Rows())
 		require.NoError(t, batch.Send())
 		var (
 			col1 *uuid.UUID
@@ -194,6 +200,7 @@ func TestColumnarUUID(t *testing.T) {
 		require.NoError(t, batch.Column(3).Append(col4Data))
 		require.NoError(t, batch.Column(4).Append(col5Data))
 	}
+	require.Equal(t, 1000, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 uuid.UUID
@@ -318,10 +325,66 @@ func TestUUIDFlush(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		vals[i] = uuid.New()
 		batch.Append(vals[i])
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
 	batch.Send()
 	rows, err := conn.Query(ctx, "SELECT * FROM uuid_flush")
+	require.NoError(t, err)
+	i := 0
+	for rows.Next() {
+		var col1 uuid.UUID
+		require.NoError(t, rows.Scan(&col1))
+		require.Equal(t, vals[i], col1)
+		i += 1
+	}
+	require.Equal(t, 1000, i)
+}
+
+type testUUIDValuer struct {
+	val uuid.UUID
+}
+
+func (c testUUIDValuer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testUUIDValuer) Scan(src any) error {
+	if t, ok := src.(string); ok {
+		*c = testUUIDValuer{val: uuid.MustParse(t)}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testUUIDValuer", src)
+}
+
+func TestUUIDValuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	require.NoError(t, err)
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS uuid_valuer1")
+	}()
+	const ddl = `
+		CREATE TABLE uuid_valuer1 (
+			  Col1 UUID
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO uuid_valuer1")
+	require.NoError(t, err)
+	vals := [1000]uuid.UUID{}
+	for i := 0; i < 1000; i++ {
+		vals[i] = uuid.New()
+		batch.Append(testUUIDValuer{val: vals[i]})
+		require.Equal(t, 1, batch.Rows())
+		batch.Flush()
+	}
+	require.Equal(t, 0, batch.Rows())
+	batch.Send()
+	rows, err := conn.Query(ctx, "SELECT * FROM uuid_valuer1")
 	require.NoError(t, err)
 	i := 0
 	for rows.Next() {

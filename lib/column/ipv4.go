@@ -19,12 +19,14 @@ package column
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/binary"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"net"
 	"net/netip"
 	"reflect"
+
+	"github.com/ClickHouse/ch-go/proto"
 )
 
 type IPv4 struct {
@@ -148,7 +150,7 @@ func (col *IPv4) Append(v any) (nulls []uint8, err error) {
 		ips := make([]netip.Addr, len(v), len(v))
 		for i := range v {
 			switch {
-			case v != nil:
+			case v[i] != nil:
 				ip, err := strToIPV4(*v[i])
 				if err != nil {
 					return nulls, err
@@ -167,7 +169,7 @@ func (col *IPv4) Append(v any) (nulls []uint8, err error) {
 		nulls = make([]uint8, len(v))
 		for i := range v {
 			switch {
-			case v != nil:
+			case v[i] != nil:
 				col.col.Append(proto.ToIPv4(*v[i]))
 			default:
 				nulls[i] = 1
@@ -199,7 +201,7 @@ func (col *IPv4) Append(v any) (nulls []uint8, err error) {
 		nulls = make([]uint8, len(v))
 		for i := range v {
 			switch {
-			case v != nil:
+			case v[i] != nil:
 				col.col.Append(proto.IPv4(*v[i]))
 			default:
 				nulls[i] = 1
@@ -207,6 +209,18 @@ func (col *IPv4) Append(v any) (nulls []uint8, err error) {
 			}
 		}
 	default:
+		if valuer, ok := v.(driver.Valuer); ok {
+			val, err := valuer.Value()
+			if err != nil {
+				return nil, &ColumnConverterError{
+					Op:   "Append",
+					To:   "IPv4",
+					From: fmt.Sprintf("%T", v),
+					Hint: fmt.Sprintf("could not get driver.Valuer value, try using %s", col.Type()),
+				}
+			}
+			return col.Append(val)
+		}
 		return nil, &ColumnConverterError{
 			Op:   "Append",
 			To:   "IPv4",
@@ -246,7 +260,12 @@ func (col *IPv4) AppendRow(v any) (err error) {
 			col.col.Append(0)
 		}
 	case net.IP:
-		col.col.Append(proto.ToIPv4(netIPToNetIPAddr(v)))
+		switch {
+		case len(v) == 0:
+			col.col.Append(0)
+		default:
+			col.col.Append(proto.ToIPv4(netIPToNetIPAddr(v)))
+		}
 	case *net.IP:
 		switch {
 		case v != nil:
@@ -266,6 +285,18 @@ func (col *IPv4) AppendRow(v any) (err error) {
 			col.col.Append(0)
 		}
 	default:
+		if valuer, ok := v.(driver.Valuer); ok {
+			val, err := valuer.Value()
+			if err != nil {
+				return &ColumnConverterError{
+					Op:   "AppendRow",
+					To:   "IPv4",
+					From: fmt.Sprintf("%T", v),
+					Hint: fmt.Sprintf("could not get driver.Valuer value, try using %s", col.Type()),
+				}
+			}
+			return col.AppendRow(val)
+		}
 		return &ColumnConverterError{
 			Op:   "AppendRow",
 			To:   "IPv4",

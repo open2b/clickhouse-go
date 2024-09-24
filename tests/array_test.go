@@ -19,6 +19,8 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -49,6 +51,7 @@ func TestSimpleArray(t *testing.T) {
 	)
 	for i := 0; i < 10; i++ {
 		require.NoError(t, batch.Append(col1Data))
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
 	require.NoError(t, batch.Send())
@@ -92,8 +95,10 @@ func TestCustomArray(t *testing.T) {
 	)
 	for i := 0; i < 10; i++ {
 		require.NoError(t, batch.Append(col1Data, col2Data))
+		require.Equal(t, 1, batch.Rows())
 		require.NoError(t, batch.Flush())
 	}
+	require.Equal(t, 0, batch.Rows())
 	require.NoError(t, batch.Send())
 	rows, err := conn.Query(ctx, "SELECT * FROM test_array")
 	require.NoError(t, err)
@@ -133,6 +138,7 @@ func TestInterfaceArray(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		require.NoError(t, batch.Append(col1Data))
 	}
+	require.Equal(t, 10, batch.Rows())
 	require.Nil(t, batch.Send())
 	rows, err := conn.Query(ctx, "SELECT * FROM test_array")
 	require.NoError(t, err)
@@ -200,8 +206,10 @@ func TestArray(t *testing.T) {
 	)
 	for i := 0; i < 10; i++ {
 		require.NoError(t, batch.Append(col1Data, col2Data, col3Data, col4Data))
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
 	require.NoError(t, batch.Send())
 	rows, err := conn.Query(ctx, "SELECT * FROM test_array")
 	require.NoError(t, err)
@@ -289,6 +297,7 @@ func TestColumnarArray(t *testing.T) {
 	require.NoError(t, batch.Column(1).Append(col2DataColArr))
 	require.NoError(t, batch.Column(2).Append(col3DataColArr))
 	require.NoError(t, batch.Column(3).Append(col4DataColArr))
+	require.Equal(t, 10, batch.Rows())
 	require.NoError(t, batch.Send())
 	rows, err := conn.Query(ctx, "SELECT * FROM test_array")
 	require.NoError(t, err)
@@ -307,4 +316,60 @@ func TestColumnarArray(t *testing.T) {
 	}
 	require.NoError(t, rows.Close())
 	assert.NoError(t, rows.Err())
+}
+
+type testArraySerializer struct {
+	val []string
+}
+
+func (c testArraySerializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testArraySerializer) Scan(src any) error {
+	if t, ok := src.([]string); ok {
+		*c = testArraySerializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testArraySerializer", src)
+}
+
+func TestSimpleArrayValuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	require.NoError(t, err)
+	const ddl = `
+		CREATE TABLE test_array_valuer (
+			  Col1 Array(String)
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE test_array_valuer")
+	}()
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_array_valuer")
+	require.NoError(t, err)
+	var (
+		col1Data = []string{"A", "b", "c"}
+	)
+	for i := 0; i < 10; i++ {
+		require.NoError(t, batch.Append(testArraySerializer{val: col1Data}))
+		require.Equal(t, 1, batch.Rows())
+		batch.Flush()
+	}
+	require.NoError(t, batch.Send())
+	rows, err := conn.Query(ctx, "SELECT * FROM test_array_valuer")
+	require.NoError(t, err)
+	for rows.Next() {
+		var (
+			col1 []string
+		)
+		require.NoError(t, rows.Scan(&col1))
+		assert.Equal(t, col1Data, col1)
+
+	}
+	require.NoError(t, rows.Close())
+	require.NoError(t, rows.Err())
 }

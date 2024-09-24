@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
@@ -73,6 +74,7 @@ func TestDateTime(t *testing.T) {
 		&testStr{Col1: dateTimeStr},
 		iDateTime,
 	))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1  time.Time
@@ -141,6 +143,7 @@ func TestNullableDateTime(t *testing.T) {
 	require.NoError(t, err)
 	datetime := time.Now().Truncate(time.Second)
 	require.NoError(t, batch.Append(datetime, datetime, datetime, datetime, datetime, datetime, datetime, datetime, datetime, datetime))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1     time.Time
@@ -181,6 +184,7 @@ func TestNullableDateTime(t *testing.T) {
 			datetimeNilStr *string = nil
 		)
 		require.NoError(t, batch.Append(datetime, nil, datetime, nil, datetime, nil, datetimeStr, nil, datetimeStr, datetimeNilStr))
+		require.Equal(t, 1, batch.Rows())
 		require.NoError(t, batch.Send())
 		var (
 			col1     time.Time
@@ -294,6 +298,7 @@ func TestColumnarDateTime(t *testing.T) {
 		require.NoError(t, batch.Column(6).Append(col6Data))
 		require.NoError(t, batch.Column(7).Append(col7Data))
 	}
+	require.Equal(t, 1000, batch.Rows())
 	require.NoError(t, batch.Send())
 	var result struct {
 		Col1 time.Time
@@ -338,8 +343,10 @@ func TestDateTimeFlush(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		vals[i] = now.Add(time.Duration(i) * time.Hour).Truncate(time.Second)
 		batch.Append(vals[i])
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
 	batch.Send()
 	rows, err := conn.Query(ctx, "SELECT * FROM datetime_flush")
 	require.NoError(t, err)
@@ -449,4 +456,58 @@ func TestCustomDateTime(t *testing.T) {
 	var col1 CustomDateTime
 	require.NoError(t, row.Scan(&col1))
 	require.Equal(t, now, time.Time(col1))
+}
+
+type testDateTimeSerializer struct {
+	val time.Time
+}
+
+func (c testDateTimeSerializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testDateTimeSerializer) Scan(src any) error {
+	if t, ok := src.(time.Time); ok {
+		*c = testDateTimeSerializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testDateTimeSerializer", src)
+}
+
+func TestDateTimeValuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	require.NoError(t, err)
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE datetime_valuer")
+	}()
+	const ddl = `
+		CREATE TABLE datetime_valuer (
+			  Col1 DateTime
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO datetime_valuer")
+	require.NoError(t, err)
+	vals := [1000]time.Time{}
+	var now = time.Now()
+	for i := 0; i < 1000; i++ {
+		vals[i] = now.Add(time.Duration(i) * time.Hour).Truncate(time.Second)
+		batch.Append(testDateTimeSerializer{val: vals[i]})
+		require.Equal(t, 1, batch.Rows())
+		batch.Flush()
+	}
+	require.Equal(t, 0, batch.Rows())
+	batch.Send()
+	rows, err := conn.Query(ctx, "SELECT * FROM datetime_valuer")
+	require.NoError(t, err)
+	i := 0
+	for rows.Next() {
+		var col1 time.Time
+		require.NoError(t, rows.Scan(&col1))
+		assert.Equal(t, vals[i].In(time.UTC), col1)
+		i += 1
+	}
 }

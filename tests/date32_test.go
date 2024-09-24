@@ -19,10 +19,12 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 
@@ -81,6 +83,7 @@ func TestDate32(t *testing.T) {
 	require.NoError(t, batch.Append(uint8(1), date1, &date2, []time.Time{date2}, []*time.Time{&date2, nil, &date1}, dateStr1, dateStrNil, []string{dateStr1, dateStr2, dateStr3}, []*string{dateStrNil, &dateStr1, dateStrNil}))
 	require.NoError(t, batch.Append(uint8(2), date2, nil, []time.Time{date1}, []*time.Time{nil, nil, &date2}, &testStr{Col1: dateStr1}, nil, []string{dateStr1, dateStr2, dateStr3}, []*string{nil, &dateStr1, dateStrNil}))
 	require.NoError(t, batch.Append(uint8(3), date3, nil, []time.Time{date3}, []*time.Time{nil, nil, &date3}, &testStr{Col1: dateStr1}, &dateStr1, []string{dateStr1, dateStr2, dateStr3}, []*string{nil, nil, dateStrNil}))
+	require.Equal(t, 3, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		result1 result
@@ -130,6 +133,36 @@ func TestDate32(t *testing.T) {
 	assert.Equal(t, []*time.Time{nil, nil, nil}, result3.Col8)
 }
 
+func TestDate32Extremes(t *testing.T) {
+	ctx := context.Background()
+
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	require.NoError(t, err)
+
+	dateMin := time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	dateMax := time.Date(2299, 12, 31, 0, 0, 0, 0, time.UTC)
+
+	const ddl = `CREATE TABLE test_date32_extremes (min Date32, max Date32) Engine MergeTree() ORDER BY tuple()`
+	conn.Exec(ctx, "DROP TABLE IF EXISTS test_date32_extremes")
+	require.NoError(t, conn.Exec(ctx, ddl))
+
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_date32_extremes")
+	require.NoError(t, err)
+	require.NoError(t, batch.Append(dateMin, dateMax))
+	require.NoError(t, batch.Send())
+
+	var (
+		actualMin time.Time
+		actualMax time.Time
+	)
+
+	require.NoError(t, conn.QueryRow(ctx, "SELECT * FROM test_date32_extremes").Scan(&actualMin, &actualMax))
+	assert.Equal(t, dateMin, actualMin)
+	assert.Equal(t, dateMax, actualMax)
+}
+
 func TestNullableDate32(t *testing.T) {
 	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
 		Method: clickhouse.CompressionLZ4,
@@ -158,6 +191,7 @@ func TestNullableDate32(t *testing.T) {
 	require.NoError(t, err)
 	dateStr := "2283-11-11"
 	require.NoError(t, batch.Append(date, &date, dateStr, &dateStr))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 *time.Time
@@ -176,6 +210,7 @@ func TestNullableDate32(t *testing.T) {
 	date, err = time.Parse("2006-01-02 15:04:05", "1925-01-01 00:00:00")
 	require.NoError(t, err)
 	require.NoError(t, batch.Append(date, nil, &date, nil))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	col2 = nil
 	col4 = nil
@@ -245,6 +280,7 @@ func TestColumnarDate32(t *testing.T) {
 		require.NoError(t, batch.Column(3).Append(col3Data))
 		require.NoError(t, batch.Column(4).Append(col4Data))
 	}
+	require.Equal(t, 1000, batch.Rows())
 	require.NoError(t, batch.Send())
 	var result struct {
 		Col1 time.Time
@@ -286,8 +322,10 @@ func TestDate32Flush(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		vals[i] = now.Add(time.Duration(i) * time.Hour)
 		batch.Append(vals[i])
+		require.Equal(t, 1, batch.Rows())
 		batch.Flush()
 	}
+	require.Equal(t, 0, batch.Rows())
 	batch.Send()
 	rows, err := conn.Query(ctx, "SELECT * FROM date_32_flush")
 	require.NoError(t, err)
@@ -321,6 +359,7 @@ func TestDate32TZ(t *testing.T) {
 		"2022-07-20 +08:00",
 	))
 	require.NoError(t, err)
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col15, col16 time.Time
@@ -355,6 +394,7 @@ func TestCustomDateTime32(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Now().UTC().Truncate(time.Hour)
 	require.NoError(t, batch.Append(now))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	row := conn.QueryRow(ctx, "SELECT * FROM date32_custom")
 	var col1 CustomDateTime
@@ -391,4 +431,63 @@ func TestDate32WithUserLocation(t *testing.T) {
 	const dateTimeNoZoneFormat = "2006-01-02T15:04:05"
 	assert.Equal(t, "2022-07-01T00:00:00", col1.Format(dateTimeNoZoneFormat))
 	assert.Equal(t, userLocation.String(), col1.Location().String())
+}
+
+type testDate32Serializer struct {
+	val time.Time
+}
+
+func (c testDate32Serializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testDate32Serializer) Scan(src any) error {
+	if t, ok := src.(time.Time); ok {
+		*c = testDate32Serializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testDate32Serializer", src)
+}
+
+func TestDate32Valuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, &clickhouse.Compression{
+		Method: clickhouse.CompressionLZ4,
+	})
+	ctx := context.Background()
+	if !CheckMinServerServerVersion(conn, 21, 9, 0) {
+		t.Skip(fmt.Errorf("unsupported clickhouse version"))
+		return
+	}
+	require.NoError(t, err)
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS date_32_valuer")
+	}()
+	const ddl = `
+		CREATE TABLE date_32_valuer (
+			  Col1 Date32
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO date_32_valuer")
+	require.NoError(t, err)
+	vals := [1000]time.Time{}
+	var now = time.Now()
+
+	for i := 0; i < 1000; i++ {
+		vals[i] = now.Add(time.Duration(i) * time.Hour)
+		batch.Append(testDate32Serializer{val: vals[i]})
+		require.Equal(t, 1, batch.Rows())
+		batch.Flush()
+	}
+	require.Equal(t, 0, batch.Rows())
+	batch.Send()
+	rows, err := conn.Query(ctx, "SELECT * FROM date_32_valuer")
+	require.NoError(t, err)
+	i := 0
+	for rows.Next() {
+		var col1 time.Time
+		require.NoError(t, rows.Scan(&col1))
+		assert.Equal(t, vals[i].Format("2016-02-01"), col1.Format("2016-02-01"))
+		i += 1
+	}
 }

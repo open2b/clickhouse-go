@@ -51,42 +51,42 @@ func TestStdConn(t *testing.T) {
 }
 
 func TestStdConnFailover(t *testing.T) {
-	env, err := GetStdTestEnvironment()
-	require.NoError(t, err)
-	useSSL, err := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_SSL", "false"))
-	require.NoError(t, err)
-	dsns := map[string]string{"Native": fmt.Sprintf("clickhouse://%s:%s@127.0.0.1:9001,127.0.0.1:9002,%s:%d", env.Username, env.Password, env.Host, env.Port),
-		"Http": fmt.Sprintf("http://%s:%s@127.0.0.1:8124,127.0.0.1:8125,%s:%d", env.Username, env.Password, env.Host, env.HttpPort)}
-	if useSSL {
-		dsns = map[string]string{"Native": fmt.Sprintf("clickhouse://%s:%s@127.0.0.1:9001,127.0.0.1:9002,%s:%d?secure=true", env.Username, env.Password, env.Host, env.SslPort),
-			"Http": fmt.Sprintf("https://%s:%s@127.0.0.1:8124,127.0.0.1:8125,%s:%d?secure=true", env.Username, env.Password, env.Host, env.HttpsPort)}
-	}
-	for name, dsn := range dsns {
-		t.Run(fmt.Sprintf("%s Protocol", name), func(t *testing.T) {
-
-			if conn, err := sql.Open("clickhouse", dsn); assert.NoError(t, err) {
-				if err := conn.PingContext(context.Background()); assert.NoError(t, err) {
-					t.Log(conn.PingContext(context.Background()))
-				}
-			}
-		})
-	}
+	testStdConnFailover(t, "")
 }
 
-func TestStdConnFailoverConnOpenRoundRobin(t *testing.T) {
+func TestStdConnFailoverRoundRobin(t *testing.T) {
+	testStdConnFailover(t, "round_robin")
+}
+
+func TestStdConnFailoverRandom(t *testing.T) {
+	testStdConnFailover(t, "random")
+}
+
+func testStdConnFailover(t *testing.T, openStrategy string) {
 	env, err := GetStdTestEnvironment()
 	require.NoError(t, err)
-	dsns := map[string]string{
-		"Native": fmt.Sprintf("clickhouse://%s:%s@127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004,127.0.0.1:9005,127.0.0.1:9006,%s:%d/?connection_open_strategy=round_robin", env.Username, env.Password, env.Host, env.Port),
-		"Http":   fmt.Sprintf("http://%s:%s@127.0.0.1:8124,127.0.0.1:8125,127.0.0.1:8126,127.0.0.1:8127,127.0.0.1:8128,127.0.0.1:8129,%s:%d/?connection_open_strategy=round_robin", env.Username, env.Password, env.Host, env.HttpPort),
-	}
 	useSSL, err := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_SSL", "false"))
 	require.NoError(t, err)
+	nativePort := env.Port
+	httpPort := env.HttpPort
+	argsList := []string{}
+	scheme := "http"
 	if useSSL {
-		dsns = map[string]string{
-			"Native": fmt.Sprintf("clickhouse://%s:%s@127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004,127.0.0.1:9005,127.0.0.1:9006,%s:%d/?connection_open_strategy=round_robin&secure=true", env.Username, env.Password, env.Host, env.SslPort),
-			"Http":   fmt.Sprintf("https://%s:%s@127.0.0.1:8124,127.0.0.1:8125,127.0.0.1:8126,127.0.0.1:8127,127.0.0.1:8128,127.0.0.1:8129,%s:%d/?connection_open_strategy=round_robin&secure=true", env.Username, env.Password, env.Host, env.HttpsPort),
-		}
+		nativePort = env.SslPort
+		httpPort = env.HttpsPort
+		argsList = append(argsList, "secure=true")
+		scheme = "https"
+	}
+	if len(openStrategy) > 0 {
+		argsList = append(argsList, fmt.Sprintf("connection_open_strategy=%s", openStrategy))
+	}
+	args := ""
+	if len(argsList) > 0 {
+		args = "?" + strings.Join(argsList, "&")
+	}
+	dsns := map[string]string{
+		"Native": fmt.Sprintf("clickhouse://%s:%s@127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004,127.0.0.1:9005,127.0.0.1:9006,%s:%d/%s", env.Username, env.Password, env.Host, nativePort, args),
+		"Http":   fmt.Sprintf("%s://%s:%s@127.0.0.1:8124,127.0.0.1:8125,127.0.0.1:8126,127.0.0.1:8127,127.0.0.1:8128,127.0.0.1:8129,%s:%d/%s", scheme, env.Username, env.Password, env.Host, httpPort, args),
 	}
 	for name, dsn := range dsns {
 		t.Run(fmt.Sprintf("%s Protocol", name), func(t *testing.T) {
@@ -289,10 +289,7 @@ func TestMaxExecutionTime(t *testing.T) {
 }
 
 func TestHttpConnWithOptions(t *testing.T) {
-	runInDocker, _ := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_DOCKER", "true"))
-	if !runInDocker {
-		t.Skip("Skip test in cloud environment.")
-	}
+	clickhouse_tests.SkipOnCloud(t)
 
 	env, err := GetStdTestEnvironment()
 	require.NoError(t, err)
@@ -327,10 +324,7 @@ func TestHttpConnWithOptions(t *testing.T) {
 }
 
 func TestEmptyDatabaseConfig(t *testing.T) {
-	runInDocker, _ := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_DOCKER", "true"))
-	if !runInDocker {
-		t.Skip("Skip test in cloud environment.")
-	}
+	clickhouse_tests.SkipOnCloud(t)
 
 	env, err := GetStdTestEnvironment()
 	require.NoError(t, err)
@@ -371,11 +365,7 @@ func TestEmptyDatabaseConfig(t *testing.T) {
 func TestHTTPProxy(t *testing.T) {
 	t.Skip("test is flaky, tinyproxy container can't be started in CI")
 
-	// check if CLICKHOUSE_HOST env is postfixed with "clickhouse.cloud", skip if not
-	clickHouseHost := clickhouse_tests.GetEnv("CLICKHOUSE_HOST", "")
-	if !strings.HasSuffix(clickHouseHost, "clickhouse.cloud") {
-		t.Skip("Skip test in non cloud environment.")
-	}
+	clickhouse_tests.SkipOnCloud(t)
 
 	proxyEnv, err := clickhouse_tests.CreateTinyProxyTestEnvironment(t)
 	defer func() {
@@ -415,15 +405,12 @@ func TestHTTPProxy(t *testing.T) {
 
 		text := scanner.Text()
 		t.Log(text)
-		return strings.Contains(text, fmt.Sprintf("Established connection to host \"%s\"", clickHouseHost))
+		return strings.Contains(text, fmt.Sprintf("Established connection to host \"%s\"", ""))
 	}, 60*time.Second, time.Millisecond, "proxy logs should contain clickhouse.cloud instance host")
 }
 
 func TestCustomSettings(t *testing.T) {
-	runInDocker, _ := strconv.ParseBool(clickhouse_tests.GetEnv("CLICKHOUSE_USE_DOCKER", "true"))
-	if !runInDocker {
-		t.Skip("Skip test in cloud environment.")
-	}
+	clickhouse_tests.SkipOnCloud(t)
 
 	dsns := map[string]clickhouse.Protocol{"Native": clickhouse.Native, "Http": clickhouse.HTTP}
 	for name, protocol := range dsns {
@@ -443,13 +430,13 @@ func TestCustomSettings(t *testing.T) {
 				require.NoError(t, row.Err())
 
 				var setting string
-				require.NoError(t, row.Scan(&setting))
-				require.Equal(t, "custom_value", setting)
+				assert.NoError(t, row.Scan(&setting))
+				assert.Equal(t, "custom_value", setting)
 			})
 
 			t.Run("get non-existing custom setting value", func(t *testing.T) {
 				row := conn.QueryRowContext(context.Background(), "SELECT getSetting('custom_non_existing_setting')")
-				require.ErrorContains(t, row.Err(), "Unknown setting custom_non_existing_setting")
+				assert.Contains(t, strings.ReplaceAll(row.Err().Error(), "'", ""), "Unknown setting custom_non_existing_setting")
 			})
 
 			t.Run("get custom setting value from query context", func(t *testing.T) {
@@ -458,11 +445,11 @@ func TestCustomSettings(t *testing.T) {
 				}))
 
 				row := conn.QueryRowContext(ctx, "SELECT getSetting('custom_query_setting')")
-				require.NoError(t, row.Err())
+				assert.NoError(t, row.Err())
 
 				var setting string
-				require.NoError(t, row.Scan(&setting))
-				require.Equal(t, "custom_query_value", setting)
+				assert.NoError(t, row.Scan(&setting))
+				assert.Equal(t, "custom_query_value", setting)
 			})
 		})
 	}

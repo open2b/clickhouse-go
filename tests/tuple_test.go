@@ -19,13 +19,17 @@ package tests
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/stretchr/testify/assert"
 )
+
+var testDate, _ = time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", "2022-05-25 17:20:57 +0100 WEST")
 
 func TestTuple(t *testing.T) {
 	conn, err := GetNativeConnection(nil, nil, nil)
@@ -86,6 +90,7 @@ func TestTuple(t *testing.T) {
 		col8Data = []any{&col8Val, (*string)(nil)}
 	)
 	require.NoError(t, batch.Append(col1Data, col2Data, col3Data, col4Data, col5Data, col6Data, col7Data, col8Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 []any
@@ -102,7 +107,7 @@ func TestTuple(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, col1Data, col1)
 	assert.Equal(t, col2Data, col2)
-	assert.JSONEq(t, toJson(col3Data), toJson(col3))
+	assert.Equal(t, col3Data, col3)
 	assert.Equal(t, col4Data, col4)
 	assert.Equal(t, col5Data, col5)
 	assert.Equal(t, col6Data, col6)
@@ -134,6 +139,7 @@ func TestNamedTupleWithSlice(t *testing.T) {
 		col1Data = []any{"A", int64(42)}
 	)
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 []any
@@ -167,6 +173,7 @@ func TestNamedTupleWithTypedSlice(t *testing.T) {
 	)
 	require.NoError(t, batch.Append(col1Data, int32(0)))
 	require.NoError(t, batch.Append(col2Data, int32(1)))
+	require.Equal(t, 2, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 []string
@@ -198,6 +205,7 @@ func TestNamedTupleWithMap(t *testing.T) {
 	batch, _ = conn.PrepareBatch(ctx, "INSERT INTO test_tuple")
 	col1Data := map[string]any{"name": "A", "id": int64(1)}
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 map[string]any
@@ -229,6 +237,7 @@ func TestNamedTupleWithTypedMap(t *testing.T) {
 		col1Data = map[string]int64{"code": int64(1), "id": int64(2)}
 	)
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var (
 		col1 map[string]int64
@@ -258,6 +267,7 @@ func TestNamedTupleWithEscapedColumns(t *testing.T) {
 		col1Data = map[string]any{"56": "A", "a22`": int64(1)}
 	)
 	require.NoError(t, batch.Append(col1Data))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var col1 map[string]any
 	require.NoError(t, conn.QueryRow(ctx, "SELECT * FROM test_tuple").Scan(&col1))
@@ -314,6 +324,7 @@ func TestUnNamedTupleWithMap(t *testing.T) {
 	batch, err = conn.PrepareBatch(ctx, "INSERT INTO test_tuple")
 	require.NoError(t, err)
 	require.NoError(t, batch.Append([]any{"A", int64(42)}))
+	require.Equal(t, 1, batch.Rows())
 	require.NoError(t, batch.Send())
 	var col1 map[string]any
 	err = conn.QueryRow(ctx, "SELECT * FROM test_tuple").Scan(&col1)
@@ -374,6 +385,7 @@ func TestColumnarTuple(t *testing.T) {
 	require.NoError(t, batch.Column(2).Append(col2Data))
 	require.NoError(t, batch.Column(3).Append(col3Data))
 	require.NoError(t, batch.Column(4).Append(col4Data))
+	require.Equal(t, 1000, batch.Rows())
 	require.NoError(t, batch.Send())
 	{
 		var (
@@ -431,10 +443,71 @@ func TestTupleFlush(t *testing.T) {
 			"name": RandAsciiString(10),
 		}
 		require.NoError(t, batch.Append(vals[i]))
+		require.Equal(t, 1, batch.Rows())
 		require.NoError(t, batch.Flush())
 	}
+	require.Equal(t, 0, batch.Rows())
 	require.NoError(t, batch.Send())
 	rows, err := conn.Query(ctx, "SELECT * FROM test_tuple_flush")
+	require.NoError(t, err)
+	i := 0
+	for rows.Next() {
+		var col1 map[string]any
+		require.NoError(t, rows.Scan(&col1))
+		require.Equal(t, vals[i], col1)
+		i += 1
+	}
+	require.Equal(t, 1000, i)
+}
+
+type testTupleSerializer struct {
+	val map[string]any
+}
+
+func (c testTupleSerializer) Value() (driver.Value, error) {
+	return c.val, nil
+}
+
+func (c *testTupleSerializer) Scan(src any) error {
+	if t, ok := src.(map[string]any); ok {
+		*c = testTupleSerializer{val: t}
+		return nil
+	}
+	return fmt.Errorf("cannot scan %T into testTupleSerializer", src)
+}
+
+func TestTupleValuer(t *testing.T) {
+	conn, err := GetNativeConnection(nil, nil, nil)
+	ctx := context.Background()
+	require.NoError(t, err)
+	if !CheckMinServerServerVersion(conn, 21, 9, 0) {
+		t.Skip(fmt.Errorf("unsupported clickhouse version"))
+		return
+	}
+	const ddl = `
+		CREATE TABLE test_tuple_valuer (
+			Col1 Tuple(name String, id Int64)
+		) Engine MergeTree() ORDER BY tuple()
+		`
+	defer func() {
+		conn.Exec(ctx, "DROP TABLE IF EXISTS test_tuple_valuer")
+	}()
+	require.NoError(t, conn.Exec(ctx, ddl))
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO test_tuple_valuer")
+	require.NoError(t, err)
+	vals := [1000]map[string]any{}
+	for i := 0; i < 1000; i++ {
+		vals[i] = map[string]any{
+			"id":   int64(i),
+			"name": RandAsciiString(10),
+		}
+		require.NoError(t, batch.Append(testTupleSerializer{val: vals[i]}))
+		require.Equal(t, 1, batch.Rows())
+		require.NoError(t, batch.Flush())
+	}
+	require.Equal(t, 0, batch.Rows())
+	require.NoError(t, batch.Send())
+	rows, err := conn.Query(ctx, "SELECT * FROM test_tuple_valuer")
 	require.NoError(t, err)
 	i := 0
 	for rows.Next() {
