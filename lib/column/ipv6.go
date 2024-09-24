@@ -21,10 +21,11 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"github.com/ClickHouse/ch-go/proto"
 	"net"
 	"net/netip"
 	"reflect"
+
+	"github.com/ClickHouse/ch-go/proto"
 )
 
 type IPv6 struct {
@@ -92,10 +93,9 @@ func (col *IPv6) ScanRow(dest any, row int) error {
 	case **[16]byte:
 		*d = new([16]byte)
 		**d = col.col.Row(row)
+	case sql.Scanner:
+		return d.Scan(col.row(row))
 	default:
-		if scan, ok := dest.(sql.Scanner); ok {
-			return scan.Scan(col.row(row))
-		}
 		return &ColumnConverterError{
 			Op:   "ScanRow",
 			To:   fmt.Sprintf("%T", dest),
