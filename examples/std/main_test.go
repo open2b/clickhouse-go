@@ -148,3 +148,24 @@ func TestOpenDb(t *testing.T) {
 func TestConnectionSettings(t *testing.T) {
 	require.NoError(t, ConnectSettings())
 }
+
+func TestVariantExample(t *testing.T) {
+	clickhouse_tests.SkipOnCloud(t, "cannot modify Variant settings on cloud")
+	require.NoError(t, VariantExample())
+}
+
+func TestDynamicExample(t *testing.T) {
+	clickhouse_tests.SkipOnCloud(t, "cannot modify Dynamic settings on cloud")
+	require.NoError(t, DynamicExample())
+}
+
+func TestJSONPathsExample(t *testing.T) {
+	clickhouse_tests.SkipOnCloud(t, "cannot modify JSON settings on cloud")
+	require.NoError(t, JSONPathsExample())
+}
+
+func TestJSONStringExample(t *testing.T) {
+	clickhouse_tests.SkipOnCloud(t, "cannot modify JSON settings on cloud")
+	t.Skip("client cannot receive JSON strings")
+	require.NoError(t, JSONStringExample())
+}
