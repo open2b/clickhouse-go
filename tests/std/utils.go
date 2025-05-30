@@ -117,6 +117,10 @@ func GetDSNConnection(environment string, protocol clickhouse.Protocol, secure b
 }
 
 func GetConnectionFromDSN(dsn string) (*sql.DB, error) {
+	return GetConnectionFromDSNWithSessionID(dsn, "")
+}
+
+func GetConnectionFromDSNWithSessionID(dsn string, sessionID string) (*sql.DB, error) {
 	conn, err := sql.Open("clickhouse", dsn)
 	if err != nil {
 		return conn, err
@@ -124,11 +128,22 @@ func GetConnectionFromDSN(dsn string) (*sql.DB, error) {
 	if CheckMinServerVersion(conn, 22, 8, 0) {
 		dsn = fmt.Sprintf("%s&database_replicated_enforce_synchronous_settings=1", dsn)
 	}
+	err = conn.Close()
+	if err != nil {
+		return conn, err
+	}
+
 	insertQuorum := clickhouse_tests.GetEnv("CLICKHOUSE_QUORUM_INSERT", "1")
 	dsn = fmt.Sprintf("%s&insert_quorum=%s&insert_quorum_parallel=0&select_sequential_consistency=1", dsn, insertQuorum)
 	if strings.HasPrefix(dsn, "http") {
 		dsn = fmt.Sprintf("%s&wait_end_of_query=1", dsn)
+
+		// Optionally provide session ID after initial version check to prevent locking
+		if len(sessionID) > 0 {
+			dsn = fmt.Sprintf("%s&session_id=%s", dsn, sessionID)
+		}
 	}
+
 	return sql.Open("clickhouse", dsn)
 }
 
@@ -187,6 +202,7 @@ func GetOpenDBConnection(environment string, protocol clickhouse.Protocol, setti
 	if err != nil {
 		return nil, err
 	}
+
 	return clickhouse.OpenDB(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", env.Host, port)},
 		Auth: clickhouse.Auth{
@@ -197,6 +213,58 @@ func GetOpenDBConnection(environment string, protocol clickhouse.Protocol, setti
 		Settings:    settings,
 		DialTimeout: 5 * time.Second,
 		Compression: compression,
+		TLS:         tlsConfig,
+		Protocol:    protocol,
+	}), nil
+}
+
+func GetOpenDBConnectionJWT(environment string, protocol clickhouse.Protocol, settings clickhouse.Settings, tlsConfig *tls.Config, jwtFunc clickhouse.GetJWTFunc) (*sql.DB, error) {
+	env, err := clickhouse_tests.GetTestEnvironment(environment)
+	if err != nil {
+		return nil, err
+	}
+	var port int
+	switch protocol {
+	case clickhouse.HTTP:
+		port = env.HttpPort
+		if tlsConfig != nil {
+			port = env.HttpsPort
+		}
+	case clickhouse.Native:
+		port = env.Port
+		if tlsConfig != nil {
+			port = env.SslPort
+		}
+	}
+	if settings == nil {
+		settings = clickhouse.Settings{}
+	}
+	if protocol == clickhouse.HTTP {
+		settings["wait_end_of_query"] = 1
+	}
+	settings["insert_quorum"], err = strconv.Atoi(clickhouse_tests.GetEnv("CLICKHOUSE_QUORUM_INSERT", "1"))
+	settings["insert_quorum_parallel"] = 0
+	settings["select_sequential_consistency"] = 1
+	if proto.CheckMinVersion(proto.Version{
+		Major: 22,
+		Minor: 8,
+		Patch: 0,
+	}, env.Version) {
+		settings["database_replicated_enforce_synchronous_settings"] = "1"
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return clickhouse.OpenDB(&clickhouse.Options{
+		Addr: []string{fmt.Sprintf("%s:%d", env.Host, port)},
+		Auth: clickhouse.Auth{
+			Database: env.Database,
+		},
+		GetJWT:      jwtFunc,
+		Settings:    settings,
+		DialTimeout: 5 * time.Second,
+		Compression: nil,
 		TLS:         tlsConfig,
 		Protocol:    protocol,
 	}), nil

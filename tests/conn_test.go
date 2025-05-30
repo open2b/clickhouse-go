@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"os"
 	"runtime"
 	"strconv"
@@ -67,20 +68,20 @@ func TestBadConn(t *testing.T) {
 }
 
 func TestConnFailover(t *testing.T) {
-	testConnFailover(t, nil)
+	testConnFailover(t, clickhouse.ConnOpenInOrder)
 }
 
 func TestConnFailoverRoundRobin(t *testing.T) {
-	strategy := clickhouse.ConnOpenRoundRobin
-	testConnFailover(t, &strategy)
+	testConnFailover(t, clickhouse.ConnOpenRoundRobin)
 }
 
 func TestConnFailoverRandom(t *testing.T) {
-	strategy := clickhouse.ConnOpenRandom
-	testConnFailover(t, &strategy)
+	rand.Seed(85206178671753423)
+	defer ResetRandSeed()
+	testConnFailover(t, clickhouse.ConnOpenRandom)
 }
 
-func testConnFailover(t *testing.T, connOpenStrategy *clickhouse.ConnOpenStrategy) {
+func testConnFailover(t *testing.T, connOpenStrategy clickhouse.ConnOpenStrategy) {
 	env, err := GetNativeTestEnvironment()
 	require.NoError(t, err)
 	useSSL, err := strconv.ParseBool(GetEnv("CLICKHOUSE_USE_SSL", "false"))
@@ -92,6 +93,7 @@ func testConnFailover(t *testing.T, connOpenStrategy *clickhouse.ConnOpenStrateg
 		tlsConfig = &tls.Config{}
 	}
 	options := clickhouse.Options{
+		ConnOpenStrategy: connOpenStrategy,
 		Addr: []string{
 			"127.0.0.1:9001",
 			"127.0.0.1:9002",
@@ -107,9 +109,7 @@ func testConnFailover(t *testing.T, connOpenStrategy *clickhouse.ConnOpenStrateg
 		},
 		TLS: tlsConfig,
 	}
-	if connOpenStrategy != nil {
-		options.ConnOpenStrategy = *connOpenStrategy
-	}
+
 	conn, err := GetConnectionWithOptions(&options)
 	require.NoError(t, err)
 	require.NoError(t, conn.Ping(context.Background()))
@@ -454,4 +454,40 @@ func TestFreeBufOnConnRelease(t *testing.T) {
 
 	err = conn.Exec(context.Background(), "DROP TABLE TestFreeBufOnConnRelease")
 	require.NoError(t, err)
+}
+
+func TestJWTError(t *testing.T) {
+	getJWT := func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("test error")
+	}
+
+	conn, err := GetJWTConnection(testSet, nil, nil, 1000*time.Millisecond, getJWT)
+	require.NoError(t, err)
+	require.ErrorContains(t, conn.Ping(context.Background()), "test error")
+}
+
+func TestNativeJWTAuth(t *testing.T) {
+	SkipNotCloud(t)
+
+	jwt := GetEnv("CLICKHOUSE_JWT", "")
+	getJWT := func(ctx context.Context) (string, error) {
+		return jwt, nil
+	}
+
+	conn, err := GetJWTConnection(testSet, nil, nil, 1000*time.Millisecond, getJWT)
+	require.NoError(t, err)
+
+	// Token works
+	require.NoError(t, conn.Ping(context.Background()))
+
+	// Wait for connection to timeout
+	time.Sleep(1500 * time.Millisecond)
+
+	// Break the token
+	jwt = "broken_jwt"
+
+	// Next ping should fail
+	require.Error(t, conn.Ping(context.Background()))
+
+	require.NoError(t, conn.Close())
 }
